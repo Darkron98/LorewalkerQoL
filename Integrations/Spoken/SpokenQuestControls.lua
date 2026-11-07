@@ -1,4 +1,5 @@
--- Spoken's controls in Lorewalker's open quest header.
+-- Adds pause/skip controls for the Spoken clip matching Lorewalker's open quest.
+-- Requires Lorewalker and Spoken.
 local _, addon = ...
 local compat = addon.Compat or {}
 addon.Compat = compat
@@ -47,6 +48,7 @@ local function MatchingCurrentClip()
     local questID = CurrentQuestID()
     if not questID or type(spoken.GetCurrent) ~= "function" then return nil end
 
+    -- Match by quest ID so the controls cannot affect a different queued Spoken clip.
     local clip = spoken:GetCurrent()
     if IsQuestClip(clip, questID) then return clip end
 end
@@ -121,6 +123,7 @@ local function HandleQuestWindowClose()
     if not questWindowWasOpen then return end
     questWindowWasOpen = false
 
+    -- In text-only player style, skip the matching quest clip when its dialog closes.
     if openQuestID and type(spoken.GetPlayerStyle) == "function"
         and spoken:GetPlayerStyle() == "none" and type(spoken.GetCurrent) == "function"
         and type(spoken.Skip) == "function" then
@@ -141,6 +144,7 @@ local function OnUpdate(_, delta)
 end
 
 function compat.InitializeSpokenQuestControls()
+    -- Defer setup until both addons expose the objects and methods this bridge uses.
     if not IsAddonLoaded("Lorewalker") or not IsAddonLoaded("Spoken") then return false end
     spoken = _G.Spoken
     if type(spoken) ~= "table" or type(spoken.GetCurrent) ~= "function"

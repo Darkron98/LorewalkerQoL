@@ -1,5 +1,5 @@
--- Adds Pawn's upgrade marker to Lorewalker's quest choice rewards.
--- This feature uses Pawn's public upgrade-arrow API and DialogueUI's icon art.
+-- Marks fixed, choice, and received item rewards that Pawn identifies as upgrades.
+-- Requires Lorewalker and Pawn; the marker art is bundled with LorewalkerQoL.
 local _, addon = ...
 local feature = addon.PawnUpgradeArrow or {}
 addon.PawnUpgradeArrow = feature
@@ -42,6 +42,7 @@ end
 local function ShowMarker(button)
     local marker = button.__lqocPawnUpgradeMarker
     if not marker then
+        -- Reward buttons are pooled, so create one marker per button and reuse it on later scans.
         local itemSlot = button.Item
         local iconFrame = itemSlot and itemSlot.Item
         if not itemSlot or not iconFrame then return end
@@ -62,6 +63,7 @@ end
 local function IsCurrentTask(task)
     local button = task.button
     if not button or button.__lqocPawnUpgradeToken ~= task.token then return false end
+    -- A pooled button may have been rebound while item data was loading; reject stale results.
     local rewardInfo = button.rewardInfo
     return rewardInfo == task.rewardInfo
         and rewardInfo ~= nil
@@ -118,6 +120,7 @@ local function CheckTask(task)
     local shouldShowUpgrade = _G.PawnShouldItemLinkHaveUpgradeArrow
     if not shouldShowUpgrade then return end
 
+    -- Item data and Pawn's result can both be temporarily unavailable; the worker retries these tasks.
     local ok, isUpgrade = pcall(shouldShowUpgrade, itemLink, false)
     if not ok or isUpgrade == nil then
         return "retry"
@@ -155,6 +158,7 @@ end)
 
 local function QueueReward(button)
     local rewardInfo = button.rewardInfo
+    -- Advancing the token invalidates any queued check for the button's previous reward.
     button.__lqocPawnUpgradeToken = (button.__lqocPawnUpgradeToken or 0) + 1
     local token = button.__lqocPawnUpgradeToken
     HideMarker(button)
@@ -203,6 +207,7 @@ local function ScanRewards()
 end
 
 local function ScheduleScan()
+    -- Coalesce repeated list updates into one scan on the next frame.
     if scanPending then return end
     scanPending = true
     _G.C_Timer.After(0, ScanRewards)
@@ -221,6 +226,7 @@ function feature.Initialize()
     local lists = GetRewardLists()
     if not lists or #lists == 0 then return false end
 
+    -- Install hooks once; missing addon APIs or UI lists return false for a later retry.
     initialized = true
     for index = 1, #lists do
         HookRewardList(lists[index])

@@ -1,4 +1,5 @@
--- Turn Lorewalker's immersive paragraphs after Spoken has read them.
+-- Syncs immersive paragraph changes and playback pace to Spoken captions.
+-- Requires Lorewalker and Spoken; ambiguous text matches fall back to Lorewalker's normal playback.
 local _, addon = ...
 local compat = addon.Compat or {}
 addon.Compat = compat
@@ -9,6 +10,10 @@ local TRANSITION_DELAY = 0
 local MIN_PARAGRAPHS = 2
 local MIN_ANCHOR_WORDS = 3
 local MAX_ANCHOR_WORDS = 8
+local MIN_PLAYBACK_INTERVAL_FACTOR = 0.5
+local MAX_PLAYBACK_INTERVAL_FACTOR = 2
+local TEXT_PLAYBACK_PAUSE_DURATION = 0.125
+local PAUSE_CHARACTERS = { "…", "!", "?", ".", ",", ";", ":" }
 local elapsed = 0
 local bubble
 local originalShowNext
@@ -42,8 +47,125 @@ local function CancelPending()
     pendingTimer, pendingTarget = nil, nil
 end
 
+local function SetPlaybackInterval(state, interval)
+    local previousInterval = tonumber(state and state.interval)
+    if not previousInterval or previousInterval <= 0 or not interval or interval <= 0 then return end
+
+    -- Keep the currently revealed character stable when changing the interval.
+    local characterProgress = (tonumber(state.elapsed) or 0) / previousInterval
+    state.interval = interval
+    state.elapsed = characterProgress * interval
+end
+
+local function RestoreAdaptivePlayback()
+    local state = bubble and bubble.textPlaybackState
+    local baseInterval = state and state.__lqocBaseInterval
+    if not baseInterval then return end
+
+    -- Restore the user's configured interval without changing the character already revealed.
+    SetPlaybackInterval(state, baseInterval)
+    state.__lqocBaseInterval = nil
+    state.__lqocAdaptiveClip = nil
+    state.__lqocAdaptivePage = nil
+end
+
+local function CountPauseCharacters(text)
+    if type(text) ~= "string" then return 0 end
+
+    -- Ignore visual markup so item links, textures, and color codes do not inflate the pause estimate.
+    local plainText = text
+    plainText = string.gsub(plainText, "|c%x%x%x%x%x%x%x%x", "")
+    plainText = string.gsub(plainText, "|r", "")
+    plainText = string.gsub(plainText, "|T.-|t", "")
+    plainText = string.gsub(plainText, "|A.-|a", "")
+    plainText = string.gsub(plainText, "|H.-|h(.-)|h", "%1")
+
+    local count = 0
+    for _, character in ipairs(PAUSE_CHARACTERS) do
+        local from = 1
+        while true do
+            local first, last = string.find(plainText, character, from, true)
+            if not first then break end
+            count = count + 1
+            from = last + 1
+        end
+    end
+    return count
+end
+
+local function GetWordTime(caption, wordIndex)
+    local word = caption.words and caption.words[wordIndex]
+    local totalWeight = tonumber(caption.totalWeight)
+    local clipLength = tonumber(caption.clip and caption.clip.length)
+    local finish = word and tonumber(word.finish)
+    if not totalWeight or totalWeight <= 0 or not clipLength or clipLength <= 0 or not finish then
+        return nil
+    end
+
+    -- Timed captions use seconds as their weight; estimated captions use spoken-word weights.
+    -- Converting through the total keeps both forms on the clip's elapsed-time scale.
+    return finish / totalWeight * clipLength
+end
+
+local function ApplyAdaptivePlayback(page, caption)
+    if not bubble or page ~= bubble.messageIndex then return end
+
+    local state = bubble.textPlaybackState
+    local baseInterval = state and tonumber(state.__lqocBaseInterval or state.interval)
+    if not state or not baseInterval or baseInterval <= 0 then return end
+
+    if state.__lqocAdaptiveClip ~= caption.clip or state.__lqocAdaptivePage ~= page then
+        RestoreAdaptivePlayback()
+        state = bubble.textPlaybackState
+        baseInterval = state and tonumber(state.interval)
+        if not state or not baseInterval or baseInterval <= 0 then return end
+    elseif state.__lqocAdaptiveClip == caption.clip and state.__lqocAdaptivePage == page then
+        return
+    end
+
+    local pageStart = page == 1 and 1 or ((boundaries[page - 1] or 0) + 1)
+    local pageEnd = boundaries[page] or #caption.words
+    if pageStart < 1 or pageEnd < pageStart then return end
+
+    local endTime = GetWordTime(caption, pageEnd)
+    local clipLength = tonumber(caption.clip.length)
+    local progress = tonumber(caption.progress)
+    if not endTime or not clipLength or not progress then return end
+
+    -- Fit the unrevealed characters into the remaining time for this paragraph's matched caption words.
+    local remainingSpeech = endTime - progress * clipLength
+    if remainingSpeech <= 0 then return end
+
+    local utf8Length = _G.strlenutf8
+    local textLength = type(utf8Length) == "function" and utf8Length(state.text or "") or #(state.text or "")
+    if textLength <= 0 then return end
+
+    local currentCharacter = math.min(math.floor((tonumber(state.elapsed) or 0) / state.interval) + 1, textLength)
+    local remainingCharacters = textLength - currentCharacter
+    if remainingCharacters <= 0 then return end
+
+    local remainingFraction = remainingCharacters / textLength
+    local pauseBudget = state.pauseEnabled
+        and CountPauseCharacters(state.text) * TEXT_PLAYBACK_PAUSE_DURATION * remainingFraction
+        or 0
+    local revealDuration = math.max(0, remainingSpeech - pauseBudget)
+    if revealDuration <= 0 then return end
+
+    -- Clamp relative to the user's base speed so long or short clips cannot cause extreme rates.
+    local targetInterval = revealDuration / remainingCharacters
+    targetInterval = math.max(baseInterval * MIN_PLAYBACK_INTERVAL_FACTOR,
+        math.min(baseInterval * MAX_PLAYBACK_INTERVAL_FACTOR, targetInterval))
+
+    state.__lqocBaseInterval = baseInterval
+    state.__lqocAdaptiveClip = caption.clip
+    state.__lqocAdaptivePage = page
+    SetPlaybackInterval(state, targetInterval)
+end
+
 local function ClearSync()
     local wasSyncing = syncing
+    -- Leave temporary speed overrides behind when captions stop, mismatch, or the bubble closes.
+    RestoreAdaptivePlayback()
     CancelPending()
     clip, sourceText, messagesRef, boundaries, syncing, elapsed = nil, nil, nil, nil, false, 0
     if wasSyncing and bubble and IsEligible() and not bubble.textPlaybackState then
@@ -133,6 +255,7 @@ local function RequestPage(target)
         CancelPending()
         return
     end
+    -- Coalesce forward page requests while the zero-delay transition is pending.
     pendingTarget = math.max(target, pendingTarget or target)
     if pendingTimer then return end
 
@@ -178,6 +301,7 @@ local function Follow(_, delta)
         return
     end
 
+    -- Rebuild alignment only when Spoken's clip or Lorewalker's displayed text changes.
     if caption.clip ~= clip or bubble.sourceText ~= sourceText or bubble.messages ~= messagesRef then
         local marks = spoken:WordMarks()
         if type(marks) ~= "table" or type(marks.Key) ~= "function" then
@@ -210,11 +334,13 @@ local function Follow(_, delta)
     syncing = true
     bubble:CancelAutoProgress()
     RequestPage(target)
+    ApplyAdaptivePlayback(target, caption)
 end
 
 local function InstallOnBubble(current)
     if bubble == current then return end
     if bubble then
+        RestoreAdaptivePlayback()
         bubble.ShowNextMessage = originalShowNext
         bubble.ScheduleAutoProgress = originalScheduleAutoProgress
     end
@@ -242,6 +368,7 @@ end
 
 local driver
 function compat.InitializeSpokenImmersivePagination()
+    -- Install the driver only after both addon APIs and Lorewalker's immersive bubble exist.
     if not IsAddonLoaded("Lorewalker") or not IsAddonLoaded("Spoken") then return false end
     if type(_G.LWImmersiveChatBubble) ~= "table" or type(_G.Spoken) ~= "table" then return false end
 

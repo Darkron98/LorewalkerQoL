@@ -1,4 +1,4 @@
--- Marks the highest vendor-value choice reward in Lorewalker's quest dialog.
+-- Marks the highest vendor-value option in Lorewalker's quest dialog.
 -- The icon is a local copy of DialogueUI's Coin-Gold asset.
 local _, addon = ...
 local feature = addon.HighestSellPrice or {}
@@ -7,10 +7,9 @@ addon.HighestSellPrice = feature
 local ICON_PATH = "Interface\\AddOns\\LorewalkerQoL\\assets\\images\\Coin-Gold.png"
 local MAX_RETRIES = 50
 local RETRY_DELAY = 0.8
-local LIST_NAMES = {
+local CHOICE_LIST_NAMES = {
     "QuestItemRewards",
     "QuestItemChoiceRewards",
-    "QuestItemReceiveRewards",
 }
 
 local initialized = false
@@ -23,8 +22,8 @@ local function GetRewardLists()
     if not questFrame then return nil end
 
     local lists = {}
-    for index = 1, #LIST_NAMES do
-        local group = questFrame[LIST_NAMES[index]]
+    for index = 1, #CHOICE_LIST_NAMES do
+        local group = questFrame[CHOICE_LIST_NAMES[index]]
         local list = group and group.RewardListFrame
         if list and list.GetAllElementsInPoolByType then
             lists[#lists + 1] = list
@@ -41,7 +40,8 @@ local function GetButtons(lists)
         if ok and type(elements) == "table" then
             for index = 1, #elements do
                 local button = elements[index]
-                if button and button.rewardInfo then
+                if button and button.rewardInfo
+                    and button.rewardInfo.questRewardType == "choice" then
                     local visibleOK, isVisible = pcall(function() return button:IsVisible() end)
                     if visibleOK and isVisible then
                         buttons[#buttons + 1] = button
@@ -99,6 +99,23 @@ local function GetSellPrice(itemLink)
     return tonumber(sellPrice)
 end
 
+local function GetRewardCount(button)
+    local rewardInfo = button.rewardInfo
+    local getQuestItemInfo = _G.GetQuestItemInfo
+    if not getQuestItemInfo or not rewardInfo.questRewardType or not rewardInfo.questRewardIndex then
+        return nil
+    end
+
+    local ok, _, _, count, _, _, itemID = pcall(
+        getQuestItemInfo,
+        rewardInfo.questRewardType,
+        rewardInfo.questRewardIndex
+    )
+    if not ok or type(count) ~= "number" or count < 1 then return nil end
+    if rewardInfo.rewardID and itemID and rewardInfo.rewardID ~= itemID then return nil end
+    return count
+end
+
 local function ScanRewards()
     scanPending = false
     local dialog = _G.LWDialogFrame
@@ -109,20 +126,28 @@ local function ScanRewards()
     local buttons = GetButtons(lists)
     if #buttons == 0 then return end
 
+    for index = 1, #buttons do
+        HideMarker(buttons[index])
+    end
+    if #buttons < 2 then return end
+
     local highestButton
-    local highestPrice = -1
+    local highestTotalValue = -1
     local dataPending = false
 
     for index = 1, #buttons do
         local button = buttons[index]
-        HideMarker(button)
         local itemLink = GetItemLink(button)
         local unitPrice = itemLink and GetSellPrice(itemLink)
-        if unitPrice == nil then
+        local count = GetRewardCount(button)
+        if unitPrice == nil or count == nil then
             dataPending = true
-        elseif unitPrice > highestPrice then
-            highestPrice = unitPrice
-            highestButton = button
+        else
+            local totalValue = unitPrice * count
+            if totalValue > highestTotalValue then
+                highestTotalValue = totalValue
+                highestButton = button
+            end
         end
     end
 
@@ -138,7 +163,7 @@ local function ScanRewards()
     end
 
     retryCount = 0
-    if highestButton and highestPrice > 0 then
+    if highestButton and highestTotalValue > 0 then
         ShowMarker(highestButton)
     end
 end

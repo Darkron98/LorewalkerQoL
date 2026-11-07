@@ -1,5 +1,5 @@
--- Marks the highest vendor-value option in Lorewalker's quest dialog.
--- The icon is a local copy of DialogueUI's Coin-Gold asset.
+-- Marks the choice option with the highest total vendor value (unit price × reward count).
+-- Requires Lorewalker; fixed rewards are intentionally excluded.
 local _, addon = ...
 local feature = addon.HighestSellPrice or {}
 addon.HighestSellPrice = feature
@@ -22,6 +22,7 @@ local function GetRewardLists()
     if not questFrame then return nil end
 
     local lists = {}
+    -- Lorewalker displays choices in different visual groups before and after quest completion.
     for index = 1, #CHOICE_LIST_NAMES do
         local group = questFrame[CHOICE_LIST_NAMES[index]]
         local list = group and group.RewardListFrame
@@ -40,6 +41,7 @@ local function GetButtons(lists)
         if ok and type(elements) == "table" then
             for index = 1, #elements do
                 local button = elements[index]
+                -- Check semantic reward type rather than the display group so fixed items never enter this comparison.
                 if button and button.rewardInfo
                     and button.rewardInfo.questRewardType == "choice" then
                     local visibleOK, isVisible = pcall(function() return button:IsVisible() end)
@@ -111,6 +113,7 @@ local function GetRewardCount(button)
         rewardInfo.questRewardType,
         rewardInfo.questRewardIndex
     )
+    -- Do not assume a quantity of one while the quest's current reward data is missing or stale.
     if not ok or type(count) ~= "number" or count < 1 then return nil end
     if rewardInfo.rewardID and itemID and rewardInfo.rewardID ~= itemID then return nil end
     return count
@@ -129,6 +132,7 @@ local function ScanRewards()
     for index = 1, #buttons do
         HideMarker(buttons[index])
     end
+    -- A single choice has no alternative to compare against.
     if #buttons < 2 then return end
 
     local highestButton
@@ -141,6 +145,7 @@ local function ScanRewards()
         local unitPrice = itemLink and GetSellPrice(itemLink)
         local count = GetRewardCount(button)
         if unitPrice == nil or count == nil then
+            -- Wait for every option's data so an incomplete scan cannot mark the wrong winner.
             dataPending = true
         else
             local totalValue = unitPrice * count
@@ -169,6 +174,7 @@ local function ScanRewards()
 end
 
 local function ScheduleScan()
+    -- Coalesce reward-list, quest-event, and dialog updates into one next-frame scan.
     if scanPending then return end
     scanPending = true
     _G.C_Timer.After(0, ScanRewards)
@@ -190,6 +196,7 @@ function feature.Initialize()
     local lists = GetRewardLists()
     if not lists or #lists == 0 then return false end
 
+    -- The feature is ready only after the choice lists exist; retrying before then installs no hooks.
     initialized = true
     for index = 1, #lists do
         HookRewardList(lists[index])

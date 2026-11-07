@@ -1,6 +1,7 @@
 ## Interface: 16001
 ## Title: Lorewalker : QoL
 ## Notes: Quality-of-life features and compatibility bridges for Lorewalker.
+## IconTexture: Interface\AddOns\Lorewalker\Art\Icons\Logo-White
 ## Author: Local
 ## Version: 0.3.0
 ## OptionalDeps: Lorewalker, PrettyTooltip, Pawn, Spoken

@@ -8,6 +8,7 @@ addon.modules = addon.modules or {}
 
 function addon.RegisterModule(name, initialize)
     if type(name) ~= "string" or type(initialize) ~= "function" then return end
+    -- A module remains eligible for initialization until its initializer returns something other than false.
     addon.modules[#addon.modules + 1] = {
         name = name,
         initialize = initialize,
@@ -19,6 +20,7 @@ function addon.Initialize()
     for index = 1, #addon.modules do
         local module = addon.modules[index]
         if not module.initialized then
+            -- Keep failures isolated; an initializer that throws is reported and can be retried later.
             local ok, initialized = pcall(module.initialize)
             if ok and initialized ~= false then
                 module.initialized = true

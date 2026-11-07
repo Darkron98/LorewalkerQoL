@@ -1,0 +1,9 @@
+## Interface: 16001
+## Title: Lorewalker : QoL
+## Notes: Quality-of-life features and compatibility bridges for Lorewalker.
+## Author: Local
+## Version: 0.3.0
+## OptionalDeps: Lorewalker, PrettyTooltip, Pawn, Spoken
+
+LorewalkerQoL.lua
+LorewalkerQoL.xml

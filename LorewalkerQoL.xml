@@ -1,7 +1,7 @@
 <Ui xmlns="http://www.blizzard.com/wow/ui/">
-    <Script file="data\Comp\PrettyTooltip\PrettyTooltip.lua"/>
-    <Script file="data\Comp\Spoken\SpokenImmersivePagination.lua"/>
-    <Script file="data\Comp\Spoken\SpokenQuestControls.lua"/>
-    <Script file="data\QoL\PawnUpgradeArrow.lua"/>
-    <Script file="data\QoL\HighestSellPrice.lua"/>
+    <Script file="Integrations\PrettyTooltip\PrettyTooltip.lua"/>
+    <Script file="Integrations\Spoken\SpokenImmersivePagination.lua"/>
+    <Script file="Integrations\Spoken\SpokenQuestControls.lua"/>
+    <Script file="Features\QuestRewards\PawnUpgradeArrow.lua"/>
+    <Script file="Features\QuestRewards\HighestSellPrice.lua"/>
 </Ui>

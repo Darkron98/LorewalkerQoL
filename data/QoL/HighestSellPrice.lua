@@ -94,7 +94,7 @@ local function GetSellPrice(itemLink)
     local getItemInfo = itemAPI and itemAPI.GetItemInfo
     if not getItemInfo or not itemLink then return nil end
 
-    local ok, itemName, _, _, _, _, _, _, _, _, sellPrice = pcall(getItemInfo, itemLink)
+    local ok, itemName, _, _, _, _, _, _, _, _, _, sellPrice = pcall(getItemInfo, itemLink)
     if not ok or not itemName then return nil end
     return tonumber(sellPrice)
 end

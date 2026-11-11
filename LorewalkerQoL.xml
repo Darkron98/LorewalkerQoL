@@ -1,5 +1,6 @@
 <Ui xmlns="http://www.blizzard.com/wow/ui/">
     <Script file="Integrations\PrettyTooltip\PrettyTooltip.lua"/>
+    <Script file="Integrations\Curator\Curator.lua"/>
     <Script file="Integrations\Spoken\SpokenImmersivePagination.lua"/>
     <Script file="Integrations\Spoken\SpokenQuestControls.lua"/>
     <Script file="Features\QuestRewards\PawnUpgradeArrow.lua"/>

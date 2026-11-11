@@ -4,7 +4,7 @@
 ## IconTexture: Interface\AddOns\Lorewalker\Art\Icons\Logo-White
 ## Author: Local
 ## Version: 0.3.0
-## OptionalDeps: Lorewalker, PrettyTooltip, Pawn, Spoken
+## OptionalDeps: Lorewalker, PrettyTooltip, Pawn, Spoken, Curator
 
 LorewalkerQoL.lua
 LorewalkerQoL.xml

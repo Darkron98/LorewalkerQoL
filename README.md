@@ -14,6 +14,7 @@ Standalone addon with optional quality-of-life features and compatibility bridge
 | Module | Purpose | Dependencies |
 | --- | --- | --- |
 | `Integrations/PrettyTooltip/PrettyTooltip.lua` | Moves PrettyTooltip's panel host with Lorewalker's tooltip during HideUI. | Lorewalker, PrettyTooltip |
+| `Integrations/Curator/Curator.lua` | Anchors Curator's gossip options panel beside Lorewalker's dialog and suspends HideUI while Curator tavern windows are open. | Lorewalker, Curator |
 | `Integrations/Spoken/SpokenImmersivePagination.lua` | Syncs immersive paragraph changes and playback pace with Spoken captions. | Lorewalker, Spoken |
 | `Integrations/Spoken/SpokenQuestControls.lua` | Adds pause and skip controls for Spoken quest clips. | Lorewalker, Spoken |
 | `Features/QuestRewards/PawnUpgradeArrow.lua` | Marks fixed and choice item rewards Pawn identifies as upgrades. | Lorewalker, Pawn |

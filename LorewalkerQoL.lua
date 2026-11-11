@@ -38,6 +38,7 @@ lifecycle:SetScript("OnEvent", function(_, event, loadedAddon)
     if event == "PLAYER_LOGIN"
         or loadedAddon == addonName
         or loadedAddon == "Lorewalker"
+        or loadedAddon == "Curator"
         or loadedAddon == "PrettyTooltip"
         or loadedAddon == "Pawn" then
         addon.Initialize()

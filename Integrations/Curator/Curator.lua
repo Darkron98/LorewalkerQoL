@@ -10,6 +10,7 @@ local hookedPanels = {}
 local hookedDialogs = {}
 local hookedRows = {}
 local hideUIModeActive = false
+local hideUIModeAPIUsable
 local hideUIDisabledForCurator = false
 local hideUIWasActiveForCurator = false
 local curatorActionPending = false
@@ -45,12 +46,30 @@ local function IsHideUIActive()
     return uiParentHidden or worldHidden
 end
 
+local function SetLorewalkerHideUIModeActive(active)
+    local uiModeUtil = _G.UIModeUtil
+    if hideUIModeAPIUsable == false or not (uiModeUtil and uiModeUtil.SetModeActive) then
+        return false
+    end
+
+    local ok = pcall(uiModeUtil.SetModeActive, HIDE_UI_MODE, active)
+    if ok then
+        hideUIModeAPIUsable = true
+        return true
+    end
+
+    hideUIModeAPIUsable = false
+    if active then
+        -- A failed push can leave the name in the manager's active stack; try to clear it once.
+        pcall(uiModeUtil.SetModeActive, HIDE_UI_MODE, false)
+    end
+    return false
+end
+
 local function KeepUIVisible()
     if restoringUIVisibility then return end
     restoringUIVisibility = true
-    if _G.UIModeUtil and _G.UIModeUtil.SetModeActive then
-        _G.UIModeUtil.SetModeActive(HIDE_UI_MODE, false)
-    end
+    SetLorewalkerHideUIModeActive(false)
     if _G.UIParent then
         if _G.UIParent.Show and not _G.UIParent:IsShown() then _G.UIParent:Show() end
         if _G.UIParent.SetAlpha then _G.UIParent:SetAlpha(1) end
@@ -117,12 +136,9 @@ local function RestoreHideUIAfterCuratorWindows()
     curatorActionPending = false
     hideUIDisabledForCurator = false
     if shouldRestore then
-        if _G.UIModeUtil and _G.UIModeUtil.SetModeActive then
-            _G.UIModeUtil.SetModeActive(HIDE_UI_MODE, true)
-        end
+        hideUIModeActive = SetLorewalkerHideUIModeActive(true)
         if _G.UIParent and _G.UIParent.SetAlpha then _G.UIParent:SetAlpha(0) end
         if _G.WorldFrame and _G.WorldFrame.SetAlpha then _G.WorldFrame:SetAlpha(0) end
-        hideUIModeActive = true
     end
 
     local bar = _G.LWUIExperienceBar

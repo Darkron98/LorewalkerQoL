@@ -6,4 +6,5 @@
     <Script file="Integrations\Spoken\SpokenGossipPresentation.lua"/>
     <Script file="Features\QuestRewards\PawnUpgradeArrow.lua"/>
     <Script file="Features\QuestRewards\HighestSellPrice.lua"/>
+    <Script file="Features\QuestRewards\RequiredItemAmountFix.lua"/>
 </Ui>

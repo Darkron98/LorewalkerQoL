@@ -255,6 +255,16 @@ local function IsWorldMapOpen()
     return map and map.IsShown and map:IsShown() or false
 end
 
+local function IsLorewalkerDialogOpen()
+    local dialog = _G.LWDialogFrame
+    if not (dialog and dialog.IsShown and dialog:IsShown()) then return false end
+
+    local gossip = dialog.GossipFrame
+    local quest = dialog.QuestFrame
+    return gossip and gossip.IsShown and gossip:IsShown()
+        or quest and quest.IsShown and quest:IsShown() or false
+end
+
 local function IsEligibleClip(clip, forContext)
     if not spoken or type(spoken.GetPlayerStyle) ~= "function"
         or spoken:GetPlayerStyle() ~= "classic" then
@@ -270,6 +280,7 @@ local function ShouldKeepSpokenWindowSuppressed()
         or spoken:GetPlayerStyle() ~= "classic" then
         return false
     end
+    if IsLorewalkerDialogOpen() then return true end
     if panel and panel.IsShown and panel:IsShown() and activeClip
         and (IsMissionClip(activeClip, context) or IsExternalMissionClip(activeClip)
             or IsPlaceClip(activeClip, context)
@@ -1214,7 +1225,7 @@ local function SplitMissionTranscriptPages(text)
         local endAt = index - 1
         local nextAt = index + 1
 
-        if character == "." or character == "!" or character == "?" then
+        if character == "." then
             local nextCharacter = normalized:sub(index + 1, index + 1)
             if nextCharacter == "" or nextCharacter:match("%s") then
                 boundary = true
@@ -1840,7 +1851,13 @@ local function OnUpdate(_, delta)
     end
     if dialogOpen then
         pendingClose = nil
-        if not (panel and panel.IsShown and panel:IsShown()) then RestoreSpokenWindow() end
+        if IsLorewalkerDialogOpen()
+            and spoken and type(spoken.GetPlayerStyle) == "function"
+            and spoken:GetPlayerStyle() == "classic" then
+            HideSpokenWindow()
+        elseif not (panel and panel.IsShown and panel:IsShown()) then
+            RestoreSpokenWindow()
+        end
         return
     end
 
@@ -1899,7 +1916,13 @@ function compat.InitializeSpokenGossipPresentation()
         dialog:HookScript("OnShow", function()
             if not IsPresentationEnabled() then return end
             pendingClose = nil
-            if not (panel and panel.IsShown and panel:IsShown()) then RestoreSpokenWindow() end
+            if IsLorewalkerDialogOpen()
+                and spoken and type(spoken.GetPlayerStyle) == "function"
+                and spoken:GetPlayerStyle() == "classic" then
+                HideSpokenWindow()
+            elseif not (panel and panel.IsShown and panel:IsShown()) then
+                RestoreSpokenWindow()
+            end
             npcPortraitCaptured = false
             npcPortraitRingCaptured = false
             if npcPortraitTexture then npcPortraitTexture:SetTexture(nil) end

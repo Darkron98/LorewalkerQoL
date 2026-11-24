@@ -3,6 +3,7 @@
     <Script file="Integrations\Curator\Curator.lua"/>
     <Script file="Integrations\Spoken\SpokenImmersivePagination.lua"/>
     <Script file="Integrations\Spoken\SpokenQuestControls.lua"/>
+    <Script file="Integrations\Spoken\SpokenGossipPresentation.lua"/>
     <Script file="Features\QuestRewards\PawnUpgradeArrow.lua"/>
     <Script file="Features\QuestRewards\HighestSellPrice.lua"/>
 </Ui>

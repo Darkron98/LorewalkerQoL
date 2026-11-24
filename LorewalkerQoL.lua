@@ -6,6 +6,26 @@ local addonName, addon = ...
 addon.name = addonName
 addon.modules = addon.modules or {}
 
+function addon.GetSpokenPresentationSettings()
+    local database = _G.LorewalkerQoLDB
+    if type(database) ~= "table" then
+        database = {}
+        _G.LorewalkerQoLDB = database
+    end
+    addon.db = database
+
+    local settings = database.spokenPresentation
+    if type(settings) ~= "table" then
+        settings = {}
+        database.spokenPresentation = settings
+    end
+    if type(settings.enabled) ~= "boolean" then settings.enabled = true end
+    if type(settings.movementLocked) ~= "boolean" then settings.movementLocked = false end
+    return settings
+end
+
+addon.GetSpokenPresentationSettings()
+
 function addon.RegisterModule(name, initialize)
     if type(name) ~= "string" or type(initialize) ~= "function" then return end
     -- A module remains eligible for initialization until its initializer returns something other than false.
@@ -40,7 +60,34 @@ lifecycle:SetScript("OnEvent", function(_, event, loadedAddon)
         or loadedAddon == "Lorewalker"
         or loadedAddon == "Curator"
         or loadedAddon == "PrettyTooltip"
+        or loadedAddon == "Spoken_Places"
         or loadedAddon == "Pawn" then
         addon.Initialize()
     end
 end)
+
+local function ParseSetting(value, current)
+    value = (value or ""):match("^%s*(.-)%s*$"):lower()
+    if value == "on" or value == "yes" or value == "1" or value == "si" then return true end
+    if value == "off" or value == "no" or value == "0" then return false end
+    return not current
+end
+
+SLASH_LOREWALKERQOL1 = "/lwq"
+SlashCmdList.LOREWALKERQOL = function(message)
+    local command, value = (message or ""):match("^%s*(%S*)%s*(.-)%s*$")
+    command = (command or ""):lower()
+    local settings = addon.GetSpokenPresentationSettings()
+    local presentation = addon.Compat and addon.Compat.SpokenGossipPresentation
+
+    if command == "lock" then
+        settings.movementLocked = ParseSetting(value, settings.movementLocked)
+        if presentation and presentation.SetMovementLocked then
+            presentation.SetMovementLocked(settings.movementLocked)
+        end
+        print("Lorewalker QoL: movimiento de la ventana "
+            .. (settings.movementLocked and "bloqueado." or "desbloqueado."))
+    else
+        print("Comando disponible: /lwq lock [on|off]")
+    end
+end

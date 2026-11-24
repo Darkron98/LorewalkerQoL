@@ -10,6 +10,8 @@ local TRANSITION_DELAY = 0
 local MIN_PARAGRAPHS = 2
 local MIN_ANCHOR_WORDS = 3
 local MAX_ANCHOR_WORDS = 8
+local MAX_SOURCE_BOUNDARY_DRIFT = 0.18
+local MIN_SOURCE_BOUNDARY_SEPARATION = 0.025
 local MIN_PLAYBACK_INTERVAL_FACTOR = 0.5
 local MAX_PLAYBACK_INTERVAL_FACTOR = 2
 local TEXT_PLAYBACK_PAUSE_DURATION = 0.125
@@ -241,6 +243,88 @@ local function BuildBoundaries(messages, captionWords, marks, splitCaption)
     return result
 end
 
+local function GetTextKeys(text, marks, splitCaption)
+    if type(text) ~= "string" then return nil end
+    local ok, words = pcall(splitCaption, text)
+    if not ok or type(words) ~= "table" then return nil end
+
+    local keys = {}
+    for _, word in ipairs(words) do
+        local key = marks.Key(word.text)
+        if key then keys[#keys + 1] = key end
+    end
+    return keys
+end
+
+-- If Spoken's timed transcript is a paraphrase, use its sentence ends only when the
+-- untimed clip text exactly confirms Lorewalker's page content and order. Proportional
+-- positions then map each page break to the nearest sentence end, with a strict tolerance.
+local function BuildSourceTextBoundaries(messages, clipText, captionWords, marks, splitCaption)
+    if type(messages) ~= "table" or #messages < MIN_PARAGRAPHS then return nil end
+
+    local pageWordCounts, sourceKeys = {}, {}
+    for page = 1, #messages do
+        local keys = GetTextKeys(messages[page] and messages[page].text, marks, splitCaption)
+        if not keys or #keys == 0 then return nil end
+        pageWordCounts[page] = #keys
+        for _, key in ipairs(keys) do sourceKeys[#sourceKeys + 1] = key end
+    end
+
+    local clipKeys = GetTextKeys(clipText, marks, splitCaption)
+    if not clipKeys or #clipKeys ~= #sourceKeys then return nil end
+    for index, key in ipairs(sourceKeys) do
+        if clipKeys[index] ~= key then return nil end
+    end
+
+    local captionKeys, sentenceEnds = {}, {}
+    for index, word in ipairs(captionWords or {}) do
+        local key = marks.Key(word.text)
+        if key then
+            captionKeys[#captionKeys + 1] = index
+            local wordText = word.text or ""
+            if wordText:match("[%.%!%?…]$") then
+                sentenceEnds[#sentenceEnds + 1] = {
+                    wordIndex = index,
+                    position = #captionKeys,
+                }
+            end
+        end
+    end
+
+    local sourceWordCount, captionWordCount = #sourceKeys, #captionKeys
+    if sourceWordCount == 0 or captionWordCount == 0 then return nil end
+
+    local boundaries, previousPosition, sourcePosition = {}, 0, 0
+    for page = 1, #messages - 1 do
+        sourcePosition = sourcePosition + pageWordCounts[page]
+        local targetRatio = sourcePosition / sourceWordCount
+        local best, bestDistance, secondDistance
+
+        for _, candidate in ipairs(sentenceEnds) do
+            if candidate.position > previousPosition and candidate.position < captionWordCount then
+                local distance = math.abs(candidate.position / captionWordCount - targetRatio)
+                if not bestDistance or distance < bestDistance then
+                    secondDistance = bestDistance
+                    bestDistance = distance
+                    best = candidate
+                elseif not secondDistance or distance < secondDistance then
+                    secondDistance = distance
+                end
+            end
+        end
+
+        if not best or bestDistance > MAX_SOURCE_BOUNDARY_DRIFT
+            or (secondDistance and secondDistance - bestDistance < MIN_SOURCE_BOUNDARY_SEPARATION) then
+            return nil
+        end
+
+        boundaries[page] = best.wordIndex
+        previousPosition = best.position
+    end
+
+    return boundaries
+end
+
 local function SetPage(target)
     if target == bubble.messageIndex or target < 1 or target > #bubble.messages then return end
     bubble.isFinished = false
@@ -308,9 +392,10 @@ local function Follow(_, delta)
             ClearSync()
             return
         end
-        boundaries = BuildBoundaries(bubble.messages, caption.words, marks, function(text)
-            return spoken:SplitCaption(text)
-        end)
+        local splitCaption = function(text) return spoken:SplitCaption(text) end
+        boundaries = BuildBoundaries(bubble.messages, caption.words, marks, splitCaption)
+            or BuildSourceTextBoundaries(
+                bubble.messages, caption.clip.text, caption.words, marks, splitCaption)
         clip = boundaries and caption.clip or nil
         sourceText = boundaries and bubble.sourceText or nil
         messagesRef = boundaries and bubble.messages or nil

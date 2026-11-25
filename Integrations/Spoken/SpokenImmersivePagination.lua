@@ -177,7 +177,7 @@ end
 
 IsEligible = function()
     return bubble and _G.LWImmersiveChatBubble == bubble and bubble:IsShown()
-        and bubble.messages and #bubble.messages >= MIN_PARAGRAPHS
+        and bubble.messages and #bubble.messages >= 1
         and type(bubble.messageIndex) == "number" and IsImmersiveActive()
 end
 
@@ -254,6 +254,26 @@ local function GetTextKeys(text, marks, splitCaption)
         if key then keys[#keys + 1] = key end
     end
     return keys
+end
+
+-- A single immersive message has no page boundary to align. Confirm its complete source text
+-- against Spoken's original clip text, then use the clip's caption word timings for the whole page.
+-- This also covers a paraphrased present.transcript: the caption still belongs to this clip.
+local function BuildSingleMessageAlignment(messages, clipText, marks, splitCaption)
+    if type(messages) ~= "table" or #messages ~= 1 then return nil end
+
+    local messageKeys = GetTextKeys(messages[1] and messages[1].text, marks, splitCaption)
+    local clipKeys = GetTextKeys(clipText, marks, splitCaption)
+    if not messageKeys or not clipKeys or #messageKeys < MIN_ANCHOR_WORDS
+        or #messageKeys ~= #clipKeys then
+        return nil
+    end
+    for index, key in ipairs(messageKeys) do
+        if clipKeys[index] ~= key then return nil end
+    end
+
+    -- Empty boundaries are intentional: page 1 spans all Spoken caption words.
+    return {}
 end
 
 -- If Spoken's timed transcript is a paraphrase, use its sentence ends only when the
@@ -393,9 +413,14 @@ local function Follow(_, delta)
             return
         end
         local splitCaption = function(text) return spoken:SplitCaption(text) end
-        boundaries = BuildBoundaries(bubble.messages, caption.words, marks, splitCaption)
-            or BuildSourceTextBoundaries(
-                bubble.messages, caption.clip.text, caption.words, marks, splitCaption)
+        if #bubble.messages == 1 then
+            boundaries = BuildSingleMessageAlignment(
+                bubble.messages, caption.clip.text, marks, splitCaption)
+        else
+            boundaries = BuildBoundaries(bubble.messages, caption.words, marks, splitCaption)
+                or BuildSourceTextBoundaries(
+                    bubble.messages, caption.clip.text, caption.words, marks, splitCaption)
+        end
         clip = boundaries and caption.clip or nil
         sourceText = boundaries and bubble.sourceText or nil
         messagesRef = boundaries and bubble.messages or nil

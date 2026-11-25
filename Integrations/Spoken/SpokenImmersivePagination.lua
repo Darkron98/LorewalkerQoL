@@ -181,6 +181,14 @@ IsEligible = function()
         and type(bubble.messageIndex) == "number" and IsImmersiveActive()
 end
 
+-- Match the two text transformations Lorewalker applies to immersive/story dialogue:
+-- angle brackets are removed and an ASCII ellipsis becomes the Unicode ellipsis.
+local function MatchKey(text, marks)
+    if type(text) ~= "string" then return nil end
+    local normalized = text:gsub("[<>]", ""):gsub("%.%.%.", "…")
+    return marks.Key(normalized)
+end
+
 local function PageAnchor(text, marks, splitCaption)
     if type(text) ~= "string" then return nil end
     local words = splitCaption(text)
@@ -188,7 +196,7 @@ local function PageAnchor(text, marks, splitCaption)
 
     local keys = {}
     for _, word in ipairs(words) do
-        local key = marks.Key(word.text)
+        local key = MatchKey(word.text, marks)
         if key then keys[#keys + 1] = key end
     end
     if #keys < MIN_ANCHOR_WORDS then return nil end
@@ -200,7 +208,7 @@ end
 local function BuildBoundaries(messages, captionWords, marks, splitCaption)
     local captionKeys = {}
     for index, word in ipairs(captionWords) do
-        local key = marks.Key(word.text)
+        local key = MatchKey(word.text, marks)
         if key then captionKeys[#captionKeys + 1] = { key = key, wordIndex = index } end
     end
 
@@ -250,7 +258,7 @@ local function GetTextKeys(text, marks, splitCaption)
 
     local keys = {}
     for _, word in ipairs(words) do
-        local key = marks.Key(word.text)
+        local key = MatchKey(word.text, marks)
         if key then keys[#keys + 1] = key end
     end
     return keys
@@ -298,10 +306,10 @@ local function BuildSourceTextBoundaries(messages, clipText, captionWords, marks
 
     local captionKeys, sentenceEnds = {}, {}
     for index, word in ipairs(captionWords or {}) do
-        local key = marks.Key(word.text)
+        local key = MatchKey(word.text, marks)
         if key then
             captionKeys[#captionKeys + 1] = index
-            local wordText = word.text or ""
+            local wordText = (word.text or ""):gsub("[<>]", ""):gsub("%.%.%.", "…")
             if wordText:match("[%.%!%?…]$") then
                 sentenceEnds[#sentenceEnds + 1] = {
                     wordIndex = index,

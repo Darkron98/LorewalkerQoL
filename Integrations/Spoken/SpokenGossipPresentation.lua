@@ -1226,8 +1226,10 @@ local function SplitMissionTranscriptPages(text)
         local nextAt = index + 1
 
         if character == "." then
+            local previousCharacter = normalized:sub(index - 1, index - 1)
             local nextCharacter = normalized:sub(index + 1, index + 1)
-            if nextCharacter == "" or nextCharacter:match("%s") then
+            local partOfRepeatedDots = previousCharacter == "." or nextCharacter == "."
+            if not partOfRepeatedDots and (nextCharacter == "" or nextCharacter:match("%s")) then
                 boundary = true
                 endAt = index
             end

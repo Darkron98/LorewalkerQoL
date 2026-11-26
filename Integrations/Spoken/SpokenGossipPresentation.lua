@@ -28,6 +28,7 @@ local PAGE_CONTROL_BROWN = { 0.32, 0.16, 0.07 }
 local PAGE_CONTROL_ALPHA = 0.6
 local MIN_PAGE_WORDS = 8
 local MAX_PAGE_WORDS = 36
+local MIN_PAGE_ANCHOR_WORDS = 3
 local MIN_PAGE_HEIGHT = 72
 local FRAME_BG_INSETS = { 28, 118, 29, 142 }
 local FRAME_BG_TEXCOORD = { 0, 366 / 512, 0, 466 / 512 }
@@ -1175,6 +1176,25 @@ local function AppendBoundedPages(segment, pages)
     end
 end
 
+local function MergePagesWithoutAnchor(pages)
+    local page = 1
+    while #pages > 1 and page <= #pages do
+        if CaptionWordCount(pages[page]) < MIN_PAGE_ANCHOR_WORDS then
+            if page < #pages then
+                pages[page + 1] = Trim(pages[page] .. " " .. pages[page + 1])
+                table.remove(pages, page)
+            else
+                pages[page - 1] = Trim(pages[page - 1] .. " " .. pages[page])
+                table.remove(pages, page)
+                page = page - 1
+            end
+        else
+            page = page + 1
+        end
+    end
+    return pages
+end
+
 local function SplitTranscriptPages(text)
     if type(text) ~= "string" or text == "" then return { text or "" } end
     if not (spoken and type(spoken.SplitCaption) == "function"
@@ -1189,6 +1209,7 @@ local function SplitTranscriptPages(text)
     if #chunks < 2 then
         local pages = {}
         AppendBoundedPages(text, pages)
+        MergePagesWithoutAnchor(pages)
         return #pages > 1 and pages or { text }
     end
 
@@ -1211,6 +1232,7 @@ local function SplitTranscriptPages(text)
             AppendBoundedPages(combined, pages)
         end
     end
+    MergePagesWithoutAnchor(pages)
     return #pages > 1 and pages or { text }
 end
 
@@ -1267,10 +1289,10 @@ local function BuildTranscriptBoundaries(pages, captionWords)
             local key = marks.Key(word.text)
             if key then keys[#keys + 1] = key end
         end
-        if #keys < 3 then return nil end
+        if #keys < MIN_PAGE_ANCHOR_WORDS then return nil end
 
         local endIndex
-        for anchorLength = 3, math.min(8, #keys) do
+        for anchorLength = MIN_PAGE_ANCHOR_WORDS, math.min(8, #keys) do
             local count, foundEnd = 0, nil
             for start = 1, #captionKeys - anchorLength + 1 do
                 local matches = true

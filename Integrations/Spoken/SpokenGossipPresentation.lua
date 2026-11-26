@@ -44,6 +44,12 @@ local isDraggingPanel = false
 local context
 local pendingClose
 local activeClip
+local activeClipContext
+local presentationSuspended = false
+local missionContextRecords = {}
+local missionContextByClip = setmetatable({}, { __mode = "k" })
+local gossipContextRecords = {}
+local gossipContextByClip = setmetatable({}, { __mode = "k" })
 local motion
 local textBox
 local scrollContent
@@ -56,12 +62,6 @@ local portraitModel
 local portraitRenderer
 local portraitTexture
 local npcHeader
-local npcNameText
-local npcPortraitTexture
-local npcPortraitMask
-local npcPortraitCaptured = false
-local npcPortraitRing
-local npcPortraitRingCaptured = false
 local spokenHeader
 local spokenNameText
 local spokenPortraitMask
@@ -91,6 +91,12 @@ local missingClipSince
 local ReleasePortrait
 local RestoreSpokenWindow
 local MaintainSpokenWindowSuppression
+local FindQueuedDialogClip
+local ResolveMissionContext
+local ResolveGossipContext
+local PruneMissionContextRecords
+local StoreMissionContext
+local StoreGossipContext
 local spokenFrameSuppressed = false
 local suppressedPlayerFrames = {}
 local hookedSpokenFrames = setmetatable({}, { __mode = "k" })
@@ -184,6 +190,51 @@ local function ContextFor(dialog)
     }
 end
 
+local function CaptureGossipSpeaker(dialog)
+    local titleName = SafeText(dialog and dialog.TitleContainer and dialog.TitleContainer.Name
+        and dialog.TitleContainer.Name:GetText())
+    local selected
+    for _, unit in ipairs({ "questnpc", "npc" }) do
+        local exists = false
+        if type(_G.UnitExists) == "function" then
+            local ok, value = pcall(_G.UnitExists, unit)
+            exists = ok and value or false
+        end
+        if exists then
+            local isObject = false
+            if type(_G.UnitIsGameObject) == "function" then
+                local ok, value = pcall(_G.UnitIsGameObject, unit)
+                isObject = ok and value or false
+            end
+            if not isObject then
+                local unitName
+                if type(_G.UnitName) == "function" then
+                    local ok, value = pcall(_G.UnitName, unit)
+                    if ok then unitName = SafeText(value) end
+                end
+                local nameMatches = titleName and unitName and titleName == unitName
+                local guid
+                if type(_G.UnitGUID) == "function" then
+                    local ok, value = pcall(_G.UnitGUID, unit)
+                    if ok then guid = SafeText(value) end
+                end
+                local creatureID
+                if guid then
+                    local ok, id = pcall(string.match, guid,
+                        "^Creature%-%d+%-%d+%-%d+%-%d+%-(%d+)%-")
+                    if ok and id then creatureID = tonumber(id) end
+                end
+                if guid or creatureID then
+                    local candidate = { guid = guid, creatureID = creatureID }
+                    if nameMatches then return candidate end
+                    if not selected then selected = candidate end
+                end
+            end
+        end
+    end
+    return selected
+end
+
 local function IsMissionClip(clip, forContext)
     if not (clip and clip.source and clip.source.key == "quests" and clip.questID
         and forContext and forContext.kind ~= nil) then
@@ -236,6 +287,9 @@ local function IsSpokenPortraitClip(clip)
 end
 
 local function IsGossipClip(clip, forContext)
+    if ResolveGossipContext then
+        forContext = ResolveGossipContext(clip, forContext) or forContext
+    end
     if not (clip and clip.source and clip.source.key == "gossip" and forContext
         and forContext.kind and type(forContext.npcName) == "string" and forContext.npcName ~= "") then
         return false
@@ -247,8 +301,15 @@ local function IsGossipClip(clip, forContext)
         and matchExpiresAt and (_G.GetTime and _G.GetTime() or 0) <= matchExpiresAt
 end
 
+local function ContextForClip(clip, fallback)
+    fallback = ResolveMissionContext and ResolveMissionContext(clip, fallback) or fallback
+    fallback = ResolveGossipContext and ResolveGossipContext(clip, fallback) or fallback
+    return fallback
+end
+
 local function IsDialogClip(clip, forContext)
-    return IsMissionClip(clip, forContext) or IsGossipClip(clip, forContext)
+    local clipContext = ContextForClip(clip, forContext)
+    return IsMissionClip(clip, clipContext) or IsGossipClip(clip, clipContext)
 end
 
 local function IsWorldMapOpen()
@@ -271,9 +332,10 @@ local function IsEligibleClip(clip, forContext)
         or spoken:GetPlayerStyle() ~= "classic" then
         return false
     end
-    return IsMissionClip(clip, forContext) or IsExternalMissionClip(clip)
+    local clipContext = ContextForClip(clip, forContext)
+    return IsMissionClip(clip, clipContext) or IsExternalMissionClip(clip)
         or IsPlaceClip(clip, forContext)
-        or IsGossipClip(clip, forContext) or IsSpokenPortraitClip(clip)
+        or IsGossipClip(clip, clipContext) or IsSpokenPortraitClip(clip)
 end
 
 local function ShouldKeepSpokenWindowSuppressed()
@@ -282,10 +344,11 @@ local function ShouldKeepSpokenWindowSuppressed()
         return false
     end
     if IsLorewalkerDialogOpen() then return true end
+    if presentationSuspended and activeClip and spoken:GetCurrent() == activeClip then
+        return true
+    end
     if panel and panel.IsShown and panel:IsShown() and activeClip
-        and (IsMissionClip(activeClip, context) or IsExternalMissionClip(activeClip)
-            or IsPlaceClip(activeClip, context)
-            or IsGossipClip(activeClip, context) or IsSpokenPortraitClip(activeClip)) then
+        and spoken:GetCurrent() == activeClip then
         return true
     end
 
@@ -293,6 +356,13 @@ local function ShouldKeepSpokenWindowSuppressed()
     if IsExternalMissionClip(current) or IsPlaceClip(current, context) or IsGossipClip(current, context)
         or IsSpokenPortraitClip(current) then return true end
     local forContext = pendingClose and pendingClose.context or context
+    if pendingClose and FindQueuedDialogClip then
+        local queued = FindQueuedDialogClip(forContext)
+        if queued and (not pendingClose.matchingClip or queued == pendingClose.matchingClip) then
+            pendingClose.matchingClip = queued
+            return true
+        end
+    end
     return IsDialogClip(current, forContext)
 end
 
@@ -560,23 +630,6 @@ local function BuildPanel()
     npcHeader:SetHeight(NPC_HEADER_HEIGHT)
     npcHeader:SetFrameLevel(panel:GetFrameLevel() + 2)
 
-    npcPortraitTexture = npcHeader:CreateTexture(nil, "OVERLAY")
-    npcPortraitTexture:SetSize(NPC_PORTRAIT_SIZE, NPC_PORTRAIT_SIZE)
-    npcPortraitTexture:SetPoint("CENTER", npcHeader, "LEFT", NPC_PORTRAIT_SIZE / 2, 0)
-    npcPortraitMask = npcHeader:CreateMaskTexture(nil, "ARTWORK")
-    npcPortraitMask:SetAllPoints(npcPortraitTexture)
-    npcPortraitMask:SetTexture([[Interface\AddOns\Lorewalker\Art\Dialog\DialogFrame\Mask-UnitPortrait]])
-    npcPortraitTexture:AddMaskTexture(npcPortraitMask)
-
-    npcPortraitRing = npcHeader:CreateTexture(nil, "ARTWORK")
-    npcPortraitRing:SetSize(NPC_PORTRAIT_RING_SIZE, NPC_PORTRAIT_RING_SIZE)
-    npcPortraitRing:SetPoint("CENTER", npcPortraitTexture, "CENTER")
-
-    npcNameText = MakeText(npcHeader, _G.GameFontNormal)
-    npcNameText:SetPoint("LEFT", npcHeader, "LEFT", NPC_PORTRAIT_SIZE + 10, 0)
-    npcNameText:SetPoint("RIGHT", npcHeader, "RIGHT", -62, 0)
-    npcNameText:SetHeight(NPC_HEADER_HEIGHT)
-    npcNameText:SetJustifyV("MIDDLE")
     npcHeader:Hide()
 
     spokenHeader = _G.CreateFrame("Frame", nil, panel)
@@ -756,7 +809,7 @@ local function CreatePanel()
     panelReady = false
     motion, activeClip = nil, nil
     textBox, scrollContent, portraitViewport = nil, nil, nil
-    npcHeader, npcNameText, npcPortraitTexture, npcPortraitMask, npcPortraitRing = nil, nil, nil, nil, nil
+    npcHeader = nil
     spokenHeader, spokenNameText, spokenPortraitMask, spokenPortraitRing, spokenBossFace = nil, nil, nil, nil, nil
     portraitModel, portraitRenderer, portraitTexture = nil, nil, nil
     placePicture, placeMask, playButton, skipButton = nil, nil, nil, nil
@@ -881,74 +934,199 @@ local function ConfigurePortrait(clip)
     return false
 end
 
-local function CaptureNpcPortraitRing(dialog, final)
-    if not npcPortraitRing or npcPortraitRingCaptured then return npcPortraitRingCaptured end
-    local portrait = dialog and dialog.TitleContainer and dialog.TitleContainer.Portrait
-    local source
-    if portrait and type(portrait.GetTextureFrame) == "function" then
-        local ok, textureFrame = pcall(portrait.GetTextureFrame, portrait)
-        if ok then source = GetTextureObject(textureFrame) end
+StoreMissionContext = function(dialog)
+    local missionContext = context
+    if not (missionContext and missionContext.kind == "quest"
+        and type(missionContext.questID) == "number") then return end
+    if PruneMissionContextRecords then PruneMissionContextRecords() end
+    for _, record in ipairs(missionContextRecords) do
+        if record == missionContext then return end
     end
-    if source and CopyTexture(source, npcPortraitRing) then
-        CopyTextureCoordinates(source, npcPortraitRing, { 0, 1, 0, 1 })
-        CopyVertexColor(source, npcPortraitRing)
-        npcPortraitRingCaptured = true
-        return true
-    end
-    if not final then return false end
-
-    local underlay = dialog and dialog.ContentFrame and dialog.ContentFrame.UnderlayTexture
-    local underlayObject = GetTextureObject(underlay)
-    local underlayPath = underlayObject and underlayObject.GetTexture and underlayObject:GetTexture()
-    local isForever = type(underlayPath) == "string" and underlayPath:find("Camelot", 1, true) ~= nil
-    local base = [[Interface\AddOns\Lorewalker\Art\Dialog\DialogFrame\DialogFrame]]
-    npcPortraitRing:SetTexture(isForever and (base .. "-Camelot") or base)
-    npcPortraitRing:SetTexCoord(6 / 512, 82 / 512, 6 / 512, 82 / 512)
-    npcPortraitRingCaptured = true
-    return true
+    missionContext.storedAt = missionContext.storedAt or missionContext.at
+    missionContextRecords[#missionContextRecords + 1] = missionContext
+    if PruneMissionContextRecords then PruneMissionContextRecords() end
 end
 
-local function CaptureNpcPortrait(dialog, final)
-    if not npcPortraitTexture then return false end
-    CaptureNpcPortraitRing(dialog, final)
-    if npcPortraitCaptured then return true end
-    local unit
-    if _G.UnitExists and _G.UnitExists("questnpc") then
-        unit = "questnpc"
-    elseif _G.UnitExists and _G.UnitExists("npc") then
-        unit = "npc"
+StoreGossipContext = function(dialog)
+    local gossipContext = context
+    if not (gossipContext and gossipContext.kind == "gossip"
+        and type(gossipContext.npcName) == "string" and gossipContext.npcName ~= "") then return end
+    for _, record in ipairs(gossipContextRecords) do
+        if record == gossipContext then return end
+        if not record.closedAt and record.npcName == gossipContext.npcName then
+            record.spokenSpeaker = record.spokenSpeaker or CaptureGossipSpeaker(dialog)
+            context = record
+            return
+        end
     end
+    gossipContext.spokenSpeaker = gossipContext.spokenSpeaker or CaptureGossipSpeaker(dialog)
+    gossipContext.storedAt = gossipContext.storedAt or gossipContext.at
+    gossipContextRecords[#gossipContextRecords + 1] = gossipContext
+end
 
-    local isGameObject = unit and _G.UnitIsGameObject
-        and (_G.UnitIsGameObject(unit) or _G.UnitIsGameObject("npc") or _G.UnitIsGameObject("questnpc"))
-    if unit and not isGameObject and type(_G.SetPortraitTexture) == "function" then
-        local ok = pcall(_G.SetPortraitTexture, npcPortraitTexture, unit)
-        if ok then
-            npcPortraitCaptured = true
-            return true
+ResolveGossipContext = function(clip, fallback)
+    if not (clip and clip.source and clip.source.key == "gossip") then return fallback end
+    local assigned = gossipContextByClip[clip]
+    if assigned then return assigned end
+
+    local speaker = SafeText(clip.present and clip.present.header)
+    if not speaker then return fallback end
+    local spokenAt = type(clip.spokenAt) == "number" and clip.spokenAt or nil
+    local best, bestDistance
+    for _, candidate in ipairs(gossipContextRecords) do
+        if candidate.npcName == speaker and not candidate.matchedClip then
+            local capturedAt = candidate.storedAt or candidate.at or spokenAt
+            local plausible = not spokenAt or not capturedAt or capturedAt <= spokenAt + 0.5
+            local distance = spokenAt and capturedAt and math.abs(capturedAt - spokenAt) or nil
+            if plausible and (not best or (distance and (not bestDistance or distance < bestDistance))) then
+                best, bestDistance = candidate, distance
+            end
+        end
+    end
+    if best then
+        best.matchedClip = clip
+        gossipContextByClip[clip] = best
+        return best
+    end
+    if fallback and fallback.kind == "gossip" and fallback.npcName == speaker then return fallback end
+end
+
+ResolveMissionContext = function(clip, fallback)
+    if not (clip and clip.source and clip.source.key == "quests" and clip.questID
+        and not IsExternalMissionClip(clip)) then
+        return fallback
+    end
+    local assigned = missionContextByClip[clip]
+    if assigned then return assigned end
+
+    local spokenAt = type(clip.spokenAt) == "number" and clip.spokenAt or nil
+    local best, bestDistance
+    for _, candidate in ipairs(missionContextRecords) do
+        if candidate.questID == clip.questID and not candidate.matchedClip then
+            local capturedAt = candidate.storedAt or candidate.at or spokenAt
+            local plausible = not spokenAt or not capturedAt or capturedAt <= spokenAt + 0.5
+            local distance = spokenAt and capturedAt and math.abs(capturedAt - spokenAt) or nil
+            if plausible and (not best or (distance and (not bestDistance or distance < bestDistance))) then
+                best, bestDistance = candidate, distance
+            end
+        end
+    end
+    if best then
+        best.matchedClip = clip
+        missionContextByClip[clip] = best
+        return best
+    end
+    if IsMissionClip(clip, fallback) then return fallback end
+end
+
+PruneMissionContextRecords = function()
+    local live = {}
+    local current = spoken and type(spoken.GetCurrent) == "function" and spoken:GetCurrent()
+    if current then
+        live[current] = true
+        ResolveMissionContext(current, context)
+    end
+    if spoken and type(spoken.GetQueue) == "function" then
+        local queue = spoken:GetQueue()
+        if type(queue) == "table" then
+            for _, clip in ipairs(queue) do
+                live[clip] = true
+                ResolveMissionContext(clip, context)
+            end
         end
     end
 
-    if not final then return false end
-    -- Lorewalker uses the quest book icon for game objects and missing unit portraits.
-    npcPortraitTexture:SetTexture([[Interface\QuestFrame\UI-QuestLog-BookIcon]])
-    npcPortraitTexture:SetTexCoord(0, 1, 0, 1)
-    npcPortraitCaptured = true
-    return true
+    local now = _G.GetTime and _G.GetTime() or 0
+    local lorewalkerOpen = IsLorewalkerDialogOpen()
+    for index = #missionContextRecords, 1, -1 do
+        local record = missionContextRecords[index]
+        local stillQueued = record.matchedClip and live[record.matchedClip]
+        local awaitingClip = (lorewalkerOpen and not record.closedAt)
+            or now - (record.closedAt or record.capturedAt or record.at or now) <= 30
+        if not stillQueued and not awaitingClip then
+            table.remove(missionContextRecords, index)
+        end
+    end
+end
+
+local function PruneGossipContextRecords()
+    local live = {}
+    local current = spoken and type(spoken.GetCurrent) == "function" and spoken:GetCurrent()
+    if current then
+        live[current] = true
+        ResolveGossipContext(current, context)
+    end
+    if spoken and type(spoken.GetQueue) == "function" then
+        local queue = spoken:GetQueue()
+        if type(queue) == "table" then
+            for _, clip in ipairs(queue) do
+                live[clip] = true
+                ResolveGossipContext(clip, context)
+            end
+        end
+    end
+
+    local now = _G.GetTime and _G.GetTime() or 0
+    local gossipOpen = IsLorewalkerDialogOpen() and context and context.kind == "gossip"
+    for index = #gossipContextRecords, 1, -1 do
+        local record = gossipContextRecords[index]
+        local stillQueued = record.matchedClip and live[record.matchedClip]
+        local awaitingClip = (gossipOpen and not record.closedAt)
+            or now - (record.closedAt or record.storedAt or record.at or now) <= 30
+        if not stillQueued and not awaitingClip then
+            table.remove(gossipContextRecords, index)
+        end
+    end
+end
+
+local function ClearMissionContextRecords()
+    wipe(missionContextRecords)
+    missionContextByClip = setmetatable({}, { __mode = "k" })
+end
+
+local function ClearGossipContextRecords()
+    wipe(gossipContextRecords)
+    gossipContextByClip = setmetatable({}, { __mode = "k" })
 end
 
 local function ConfigureNpcHeader(dialog, clip)
     local title = dialog and dialog.TitleContainer
-    CaptureNpcPortrait(dialog, true)
-
     local name = title and title.Name
-    local text = SafeText(name and name.GetText and name:GetText())
+    local text = SafeText(context and context.npcName)
         or SafeText(clip and clip.present and clip.present.header)
-        or SafeText(context and context.npcName) or ""
-    npcNameText:SetText(text)
-    CopyFont(textBox, npcNameText, _G.GameFontHighlight)
-    npcHeader:SetShown(true)
-    return true
+        or SafeText(name and name.GetText and name:GetText()) or ""
+    local present = clip and clip.present or {}
+    local portrait = present.portrait or {}
+    local captured = context and context.spokenSpeaker
+    local speaker = { bullet = present.bullet or "gossip" }
+    if portrait.kind == "model" then
+        speaker.creatureID = portrait.creatureID or captured and captured.creatureID
+        speaker.displayID = portrait.displayID
+        speaker.guid = captured and captured.guid
+    elseif portrait.kind == "texture" then
+        speaker.objectOrItem = true
+        speaker.icon = portrait.texture
+        speaker.iconCrop = portrait.texCoord
+    elseif captured then
+        speaker.creatureID = captured.creatureID
+        speaker.guid = captured.guid
+    end
+
+    npcHeader:Hide()
+    portraitViewport:Hide()
+    spokenPortraitRing:Hide()
+    spokenNameText:SetText(text)
+    CopyFont(textBox, spokenNameText, _G.GameFontHighlight)
+    if spokenBossFace and type(spokenBossFace.SetSpeaker) == "function" then
+        local ok = pcall(spokenBossFace.SetSpeaker, spokenBossFace, speaker)
+        if ok then spokenBossFace:Show() else spokenBossFace:Hide() end
+        local hasHeader = ok or text ~= ""
+        spokenHeader:SetShown(hasHeader)
+        return hasHeader
+    end
+
+    spokenHeader:SetShown(text ~= "")
+    return text ~= ""
 end
 
 local function ConfigureSpokenPortrait(clip, portraitOverride)
@@ -1068,14 +1246,16 @@ local function ConfigureBossHeader(clip, label)
     return true
 end
 
-local function ConfigureExternalMissionHeader(clip, label)
+local function ConfigureSpokenMissionHeader(clip, label)
     npcHeader:Hide()
+    portraitViewport:Hide()
     spokenPortraitRing:Hide()
     spokenNameText:SetText(type(label) == "string" and label or "")
     CopyFont(textBox, spokenNameText, _G.GameFontHighlight)
 
     if not spokenBossFace or type(spokenBossFace.SetSpeaker) ~= "function" then
-        return ConfigureSpokenHeader(clip, label)
+        spokenHeader:SetShown(type(label) == "string" and label ~= "")
+        return type(label) == "string" and label ~= ""
     end
 
     local present = clip and clip.present or {}
@@ -1088,17 +1268,23 @@ local function ConfigureExternalMissionHeader(clip, label)
         speaker.objectOrItem = true
         speaker.icon = portrait.texture
         speaker.iconCrop = portrait.texCoord
+    else
+        local bullet = present.bullet and spoken and type(spoken.GetBullet) == "function"
+            and spoken:GetBullet(present.bullet)
+        speaker.objectOrItem = true
+        speaker.icon = bullet and bullet.texture
     end
 
     local ok = pcall(spokenBossFace.SetSpeaker, spokenBossFace, speaker)
     if not ok then
         spokenBossFace:Hide()
-        return ConfigureSpokenHeader(clip, label)
+    else
+        spokenBossFace:Show()
     end
 
-    spokenBossFace:Show()
-    spokenHeader:SetShown(true)
-    return true
+    local hasHeader = ok or (type(label) == "string" and label ~= "")
+    spokenHeader:SetShown(hasHeader)
+    return hasHeader
 end
 
 local function HideNpcHeader()
@@ -1467,8 +1653,7 @@ local function RenderClip(clip, sourceDialog)
     local isPlace = sourceKey == "places"
     local isReadable = sourceKey == "readables"
     local isBoss = sourceKey == "bosses"
-    local isExternalMission = IsExternalMissionClip(clip)
-    local useSpokenPortrait = isReadable or isBoss or isExternalMission
+    local useSpokenPortrait = isReadable or isBoss or sourceKey == "quests"
     local mode = isPlace and "place" or "quest"
     local mainTitle, subTitle, headerLabel
 
@@ -1531,8 +1716,8 @@ local function RenderClip(clip, sourceDialog)
         if useSpokenPortrait then
             if isBoss then
                 hasNpcHeader = ConfigureBossHeader(clip, headerLabel)
-            elseif isExternalMission then
-                hasNpcHeader = ConfigureExternalMissionHeader(clip, headerLabel)
+            elseif sourceKey == "quests" then
+                hasNpcHeader = ConfigureSpokenMissionHeader(clip, headerLabel)
             else
                 hasNpcHeader = ConfigureSpokenHeader(clip, headerLabel)
             end
@@ -1603,6 +1788,7 @@ local function BeginMotion(kind, fromX, fromY, fromScale, toX, toY, toScale)
 end
 
 local function ShowClip(clip, forContext, animateFromDialog, deferDisplay)
+    forContext = ContextForClip(clip, forContext)
     if not IsEligibleClip(clip, forContext) then return false end
     context = forContext
     local ok, rendered = pcall(RenderClip, clip, _G.LWDialogFrame)
@@ -1610,6 +1796,8 @@ local function ShowClip(clip, forContext, animateFromDialog, deferDisplay)
         if not ok and _G.geterrorhandler then _G.geterrorhandler()(tostring(rendered)) end
         return false
     end
+    activeClipContext = forContext
+    presentationSuspended = false
 
     local startX, startY
     if animateFromDialog and forContext then
@@ -1680,8 +1868,10 @@ local function RevealPreparedPlace()
 end
 
 local function BeginHide()
+    presentationSuspended = false
     if not (panel and panel:IsShown()) then
         activeClip = nil
+        activeClipContext = nil
         missingClipSince = nil
         RestoreSpokenWindow()
         return
@@ -1692,6 +1882,7 @@ local function BeginHide()
     local fromX, fromY = x or 0, y or 0
     BeginMotion("out", fromX, fromY, scale, fromX, fromY - 18, math.max(0.72, scale * 0.92))
     activeClip = nil
+    activeClipContext = nil
     missingClipSince = nil
 end
 
@@ -1700,7 +1891,7 @@ local function CurrentCandidate()
     return spoken:GetCurrent()
 end
 
-local function FindQueuedDialogClip(forContext)
+FindQueuedDialogClip = function(forContext)
     if not (spoken and type(spoken.GetQueue) == "function") then return nil end
     local queue = spoken:GetQueue()
     if type(queue) ~= "table" then return nil end
@@ -1729,7 +1920,6 @@ end
 
 local function OnDialogHidden(dialog)
     if not IsPresentationEnabled() then return end
-    CaptureNpcPortrait(dialog, true)
     if not context then context = ContextFor(dialog) end
     if not context or not context.kind then return end
     local rect = ContextFor(dialog)
@@ -1750,11 +1940,44 @@ local function OnDialogHidden(dialog)
     end
 end
 
-local function SnapshotDialog(dialog)
+local function SnapshotDialog(dialog, skipMissionStore)
     if dialog and dialog.IsShown and dialog:IsShown() then
-        CaptureNpcPortrait(dialog)
         local fresh = ContextFor(dialog)
-        if fresh.kind then context = fresh end
+        if fresh.kind then
+            local saved
+            if fresh.kind == "quest" and fresh.questID then
+                for index = #missionContextRecords, 1, -1 do
+                    local candidate = missionContextRecords[index]
+                    if candidate.questID == fresh.questID and candidate.npcName == fresh.npcName then
+                        saved = candidate
+                        break
+                    end
+                end
+            elseif fresh.kind == "gossip" then
+                for index = #gossipContextRecords, 1, -1 do
+                    local candidate = gossipContextRecords[index]
+                    if not candidate.closedAt and candidate.npcName == fresh.npcName then
+                        saved = candidate
+                        break
+                    end
+                end
+            end
+            if saved then
+                saved.questTitle = fresh.questTitle
+                saved.npcName = fresh.npcName
+                saved.centerX, saved.centerY = fresh.centerX, fresh.centerY
+                saved.width, saved.height = fresh.width, fresh.height
+                saved.at = fresh.at
+                context = saved
+            else
+                context = fresh
+            end
+            if context.kind == "quest" and not saved and not skipMissionStore and StoreMissionContext then
+                StoreMissionContext(dialog)
+            elseif context.kind == "gossip" and not saved and not skipMissionStore and StoreGossipContext then
+                StoreGossipContext(dialog)
+            end
+        end
     elseif context and context.closedAt then
         -- Keep the last visible page snapshot until a clip is matched or the short close window expires.
         local now = _G.GetTime and _G.GetTime() or 0
@@ -1771,7 +1994,7 @@ end
 local function RefreshPresentation()
     if not panel or not activeClip then return end
     local clip = CurrentCandidate()
-    if clip == activeClip and IsEligibleClip(clip, context) then
+    if clip == activeClip then
         missingClipSince = nil
         UpdateTranscriptPaging()
         local nowPlaying = type(spoken.GetNowPlaying) == "function" and spoken:GetNowPlaying() or nil
@@ -1781,10 +2004,13 @@ local function RefreshPresentation()
         end
         return
     end
-    if clip and IsEligibleClip(clip, context) then
+    local clipContext = ContextForClip(clip, context)
+    if clip and IsEligibleClip(clip, clipContext) then
+        context = clipContext
         local ok, rendered = pcall(RenderClip, clip, _G.LWDialogFrame)
         if ok and rendered then
             activeClip = clip
+            activeClipContext = clipContext
             missingClipSince = nil
             UpdateTranscriptPaging()
             return
@@ -1799,6 +2025,55 @@ local function RefreshPresentation()
     end
 end
 
+local function SuspendPresentationForDialog()
+    if not (panel and panel.IsShown and panel:IsShown() and activeClip) then return false end
+    if IsPlaceClip(activeClip, activeClipContext) then return false end
+    presentationSuspended = true
+    motion = nil
+    panel:SetAlpha(1)
+    panel:SetScale(1)
+    panel:Hide()
+    return true
+end
+
+local function RestoreSuspendedPresentation(dialog)
+    if not presentationSuspended then return false end
+    local current = CurrentCandidate()
+    if current == activeClip and current then
+        if not (spoken and spoken.GetPlayerStyle and spoken:GetPlayerStyle() == "classic") then
+            presentationSuspended = false
+            activeClip = nil
+            activeClipContext = nil
+            if ReleasePortrait then ReleasePortrait() end
+            return false
+        end
+        presentationSuspended = false
+        pendingClose = nil
+        local x, y = FinalPosition()
+        panel:ClearAllPoints()
+        panel:SetPoint("CENTER", _G.UIParent, "BOTTOMLEFT", x, y)
+        panel:SetScale(1)
+        panel:SetAlpha(1)
+        panel:Show()
+        missingClipSince = nil
+        UpdateTranscriptPaging()
+        HideSpokenWindow()
+        return true
+    end
+    local currentContext = ContextForClip(current, context)
+    if current and IsEligibleClip(current, currentContext) then
+        presentationSuspended = false
+        ShowClip(current, currentContext, false)
+        return true
+    end
+
+    presentationSuspended = false
+    activeClip = nil
+    activeClipContext = nil
+    if ReleasePortrait then ReleasePortrait() end
+    return false
+end
+
 local function OnUpdate(_, delta)
     if not IsPresentationEnabled() then return end
     tickElapsed = tickElapsed + delta
@@ -1808,6 +2083,8 @@ local function OnUpdate(_, delta)
     MaintainSpokenWindowSuppression()
     local dialog = _G.LWDialogFrame
     SnapshotDialog(dialog)
+    if PruneMissionContextRecords then PruneMissionContextRecords() end
+    PruneGossipContextRecords()
     local dialogOpen = dialog and dialog.IsShown and dialog:IsShown()
     if panel and panel:IsShown() then
         if IsPlaceClip(activeClip) and IsWorldMapOpen() then
@@ -1816,6 +2093,7 @@ local function OnUpdate(_, delta)
             return
         end
         if dialogOpen then
+            if SuspendPresentationForDialog() then return end
             -- Places narration can start while Lorewalker is still showing its gossip,
             -- so let that clip remain visible. Once a quest clip takes over, close the
             -- Places panel and wait for Lorewalker's quest dialog to close normally.
@@ -1831,11 +2109,14 @@ local function OnUpdate(_, delta)
             BeginHide()
         else
             local current = CurrentCandidate()
+            local currentContext = ContextForClip(current, context)
             if not activeClip and motion and motion.kind == "out"
-                and IsEligibleClip(current, context) then
+                and IsEligibleClip(current, currentContext) then
+                context = currentContext
                 local ok, rendered = pcall(RenderClip, current, dialog)
                 if ok and rendered then
                     activeClip = current
+                    activeClipContext = currentContext
                     missingClipSince = nil
                     motion = nil
                     panel:SetAlpha(1)
@@ -1850,6 +2131,14 @@ local function OnUpdate(_, delta)
             RefreshPresentation()
         end
         return
+    end
+
+    if presentationSuspended then
+        if dialogOpen then
+            HideSpokenWindow()
+            return
+        end
+        if RestoreSuspendedPresentation(dialog) then return end
     end
 
     local current = CurrentCandidate()
@@ -1947,12 +2236,16 @@ function compat.InitializeSpokenGossipPresentation()
             elseif not (panel and panel.IsShown and panel:IsShown()) then
                 RestoreSpokenWindow()
             end
-            npcPortraitCaptured = false
-            npcPortraitRingCaptured = false
-            if npcPortraitTexture then npcPortraitTexture:SetTexture(nil) end
-            if npcPortraitRing then npcPortraitRing:SetTexture(nil) end
-            CaptureNpcPortrait(dialog)
-            SnapshotDialog(dialog)
+            SuspendPresentationForDialog()
+            SnapshotDialog(dialog, true)
+            if IsLorewalkerDialogOpen() then
+                context = ContextFor(dialog)
+                if context.kind == "quest" then
+                    StoreMissionContext(dialog)
+                elseif context.kind == "gossip" then
+                    StoreGossipContext(dialog)
+                end
+            end
         end)
         dialog:HookScript("OnHide", function() OnDialogHidden(dialog) end)
     end
@@ -1977,6 +2270,10 @@ function compat.SetEnabled(enabled)
     pendingClose = nil
     context = nil
     activeClip = nil
+    activeClipContext = nil
+    presentationSuspended = false
+    ClearMissionContextRecords()
+    ClearGossipContextRecords()
     missingClipSince = nil
     motion = nil
     textFade = nil

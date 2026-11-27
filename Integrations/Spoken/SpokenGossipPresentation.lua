@@ -46,6 +46,7 @@ local pendingClose
 local activeClip
 local activeClipContext
 local presentationSuspended = false
+local interactionSuspended = false
 local missionContextRecords = {}
 local missionContextByClip = setmetatable({}, { __mode = "k" })
 local gossipContextRecords = {}
@@ -2081,6 +2082,15 @@ local function OnUpdate(_, delta)
     tickElapsed = 0
 
     MaintainSpokenWindowSuppression()
+    if interactionSuspended then
+        if panel and panel:IsShown() then
+            panel:Hide()
+            panel:SetAlpha(1)
+            panel:SetScale(1)
+            motion = nil
+        end
+        return
+    end
     local dialog = _G.LWDialogFrame
     SnapshotDialog(dialog)
     if PruneMissionContextRecords then PruneMissionContextRecords() end
@@ -2262,6 +2272,27 @@ function compat.SetMovementLocked(locked)
     return settings.movementLocked
 end
 
+function compat.SetInteractionSuspended(suspended)
+    suspended = suspended and true or false
+    if interactionSuspended == suspended then return interactionSuspended end
+    interactionSuspended = suspended
+    if suspended then
+        motion = nil
+        textFade = nil
+        if panel then
+            panel:Hide()
+            panel:SetAlpha(1)
+            panel:SetScale(1)
+        end
+    else
+        activeClip = nil
+        activeClipContext = nil
+        missingClipSince = nil
+        motion = nil
+    end
+    return interactionSuspended
+end
+
 function compat.SetEnabled(enabled)
     local settings = PresentationSettings()
     settings.enabled = enabled and true or false
@@ -2272,6 +2303,7 @@ function compat.SetEnabled(enabled)
     activeClip = nil
     activeClipContext = nil
     presentationSuspended = false
+    interactionSuspended = false
     ClearMissionContextRecords()
     ClearGossipContextRecords()
     missingClipSince = nil

@@ -5,7 +5,7 @@
 ## Author: Local
 ## Version: 0.3.0
 ## SavedVariables: LorewalkerQoLDB
-## OptionalDeps: Lorewalker, PrettyTooltip, Pawn, Spoken, Spoken_Places, Curator
+## OptionalDeps: Lorewalker, Interaction, PrettyTooltip, Pawn, Spoken, Spoken_Places, Spoken_Readables, Curator
 
 LorewalkerQoL.lua
 LorewalkerQoL.xml
